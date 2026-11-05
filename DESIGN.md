@@ -55,15 +55,15 @@ I used Claude (Claude Code) throughout M4. It drafted the design-note decisions 
 
 ## Pair programming log
 
-**Partner:** [actual name]
+**Partner:** Zachary LaCava
 
 | Session | Date | Start–End | Whose code | Part of the code | Role swaps |
 |---|---|---|---|---|---|
-| 1 | [date] | [actual times] | Mine | [what you actually worked on] | [actual swap time] |
-| 2 | [date] | [actual times] | Partner's | [what you actually worked on] | [actual swap time] |
+| 1 | Nov 4, 2026 | 7:22–7:52 pm | Mine | Background build: poll timer, `poll_build()`, and `add_document_file()` | I drove first; swapped to my partner at 7:37 pm |
+| 2 | Nov 4, 2026 | 8:00–8:30 pm | Partner's | CR-1 sockets: starting and stopping threads in `main.cpp` and `sendResponse()` in `ipc.cpp` | My partner drove first; swapped to me at 8:15 pm |
 
-**My contribution as navigator:** [a real suggestion you made that your partner used]
+**My contribution as navigator:** I noticed that `add_document_file()` updates the GUI, so it cannot be called directly from the socket thread. I suggested using a queued `invokeMethod` call so it runs on the GUI thread instead.
 
-**My partner's contribution as navigator:** [a real suggestion your partner made that you used]
+**My partner's contribution as navigator:** While I was working on `poll_build()`, my partner helped catch some typos and suggested adding `catch (...)` to handle any unexpected errors.
 
-**What kind of interaction worked best:** [one honest sentence]
+**What kind of interaction worked best:** Going over what each function needed to do before writing the code worked best for us. This helped us catch problems early instead of finding them when compiling.

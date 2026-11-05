@@ -2,12 +2,19 @@
 
 #include <QMainWindow>
 
+#include "aiws/corpus_build_job.hpp"
 #include "aiws/processing_core.hpp"
 #include "aiws/workspace.hpp"
+
+#include <atomic>
+#include <cstdint>
+#include <future>
+#include <memory>
 
 class QLabel;
 class QPushButton;
 class QString;
+class QTimer;
 class QWidget;
 
 namespace aiws::gui {
@@ -123,7 +130,32 @@ private slots:
      */
     void exit_application();
 
+    /** @brief Checks whether the worker finished, and collects its result if so. */
+    void poll_build();
+
 private:
+    enum class CorpusState { NotBuilt, Building, Current, Failed };
+
+    static constexpr int kPollIntervalMs = 50;
+
+    /** @brief Starts the worker on a copy of the workspace. */
+    void start_build_job();
+
+    /** @brief True if the build being collected reflects the present workspace. */
+    bool build_is_current() const noexcept;
+
+    /** @brief Makes a finished, valid build the current corpus. */
+    void accept_build(ProcessingCore core);
+
+    /** @brief Shows a build failure to the user and leaves the building state. */
+    void report_build_failure(const QString& reason);
+
+    /** @brief Asks the running worker, if any, to stop early. */
+    void cancel_running_build();
+
+    /** @brief True only when the corpus reflects the present workspace. */
+    bool corpus_is_current() const noexcept;
+
     /**
      * @brief Updates availability of actions that depend on current application state.
      */
@@ -144,7 +176,14 @@ private:
 
     Workspace workspace_;
     ProcessingCore processing_core_;
-    bool corpus_current_{false};
+    CorpusState state_{CorpusState::NotBuilt};
+    std::uint64_t generation_{0};        // Bumped by every workspace change.
+    std::uint64_t build_generation_{0};  // generation_ when the worker started.
+    int build_delay_ms_{0};
+    bool rebuild_requested_{false};
+    CoreFactory core_factory_;
+    std::shared_ptr<std::atomic<bool>> build_cancel_;
+    std::future<BuildResult> build_future_;
     ExitCallback exit_callback_{nullptr};
 
     WorkspaceWidget* workspace_widget_{nullptr};
@@ -154,6 +193,7 @@ private:
     QLabel* status_label_{nullptr};
     QPushButton* reset_button_{nullptr};
     QPushButton* exit_button_{nullptr};
+    QTimer* poll_timer_{nullptr};
 };
 
 }  // namespace aiws::gui

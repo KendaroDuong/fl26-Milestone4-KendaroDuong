@@ -6,9 +6,11 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <chrono>
 #include <exception>
 #include <string>
 #include <utility>
@@ -96,6 +98,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(exit_button_, &QPushButton::clicked,
             this, &MainWindow::exit_application);
 
+    poll_timer_ = new QTimer(this);
+    poll_timer_->setInterval(kPollIntervalsMs);
+    connect(poll_timer_, &QTimer::timeout,
+            this, &MainWindow::Poll_build);
+
     update_action_states();
 }
 
@@ -157,38 +164,60 @@ void MainWindow::add_document() {
 }
 
 void MainWindow::build_corpus() {
-    if (workspace_.documents().empty()) {
+    if (workspace_.documents().empty() ||
+        state_ == CorpusState::Building) {
         return;
     }
 
     clear_processing_outputs();
+    state_ = CorpusState::Building;
+    workspace_widget_->set_corpus_status(tr("Corpus: Building..."));
+    status_label_->setText(tr("Building corpus..."));
 
-    try {
-        processing_core_.rebuild(workspace_);
-    } catch (const std::exception& error) {
-        corpus_current_ = false;
-        workspace_widget_->set_corpus_status(
-            tr("Corpus: Build failed"));
-        status_label_->setText(
-            tr("Build Corpus failed: %1")
-                .arg(QString::fromStdString(error.what())));
-        update_action_states();
+    if (build_future_.valid()) {
+        // A cancelled build is still finishing. Only one worker at a time:
+        // poll_build() starts this build as soon as that one is collected.
+        rebuild_requested_ = true;
+    } else {
+        start_build_job();
+    }
+
+    update_action_states();
+}
+
+void MainWindow::start_build_job() {
+    build_generation_ = generation_;
+    build_cancel_ = std::make_shared<std::atomic<bool>>(false);
+
+    // Workspace is passed by value: the worker gets its own copy.
+    build_future_ = std::async(std::launch::async, run_corpus_build,
+                               workspace_, build_delay_ms_,
+                               build_cancel_, core_factory_);
+    poll_timer_->start();
+}
+
+void MainWindow::poll_build() {
+    if (build_future_.wait_for(std::chrono::seconds(0)) !=
+        std::future_status::ready)  {
         return;
     }
 
-    corpus_current_ = true;
+    poll_timer_->stop();
+    const bool current = build_is_current();
 
-    workspace_widget_->set_corpus_status(
-        tr("Corpus: %1 chunks")
-            .arg(static_cast<qulonglong>(
-                processing_core_.chunk_count())));
+    try {
+        BuildResult result = build_future_.get();
+        if (current) {
+            accept_build(std::move(result.core));
+        } 
+    } catch (const std::expection& error) {
+        if (currnet) {
+            report_build_failure(Qstring::fromStdString(error.what()));
+        }
+    } catch    
+    
 
-    status_label_->setText(
-        tr("Corpus built from %1 document(s).")
-            .arg(static_cast<qulonglong>(
-                workspace_.documents().size())));
-
-    update_action_states();
+    }
 }
 
 void MainWindow::document_selected(int row) {

@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMetaObject>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -12,6 +13,7 @@
 
 #include <chrono>
 #include <exception>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -99,35 +101,31 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::exit_application);
 
     poll_timer_ = new QTimer(this);
-    poll_timer_->setInterval(kPollIntervalsMs);
+    poll_timer_->setInterval(kPollIntervalMs);
     connect(poll_timer_, &QTimer::timeout,
-            this, &MainWindow::Poll_build);
+            this, &MainWindow::poll_build);
 
     update_action_states();
+}
+
+MainWindow::~MainWindow() {
+    // Stop serving first: nothing may queue new work while the window goes away.
+    ipc_server_.reset();
+
+    // A plain store, not cancel_running_build(): shutdown must stay prompt.
+    if (build_cancel_) {
+        build_cancel_->store(true);
+    }
+    if (build_future_.valid()) {
+        build_future_.wait();
+    }
 }
 
 void MainWindow::set_exit_callback(ExitCallback callback) noexcept {
     exit_callback_ = callback;
 }
 
-// TODO(M4): placeholder so the project links; implement per spec Section 5.
-bool MainWindow::add_document_file(const QString& /*path*/) {
-    return false;
-}
-
-// TODO(M4): placeholder so the project links; implement per spec Section 5.
-void MainWindow::set_build_delay_ms(int /*ms_per_document*/) {
-}
-
-void MainWindow::add_document() {
-    QString path = QFileDialog::getOpenFileName(
-        this, tr("Add Document"), QString(),
-        tr("Text files (*.txt);;All files (*)"));
-
-    if (path.isEmpty()) {
-        return;
-    }
-
+bool MainWindow::add_document_file(const QString& path) {
     QFileInfo info(path);
     std::string id = info.absoluteFilePath().toStdString();
 
@@ -136,7 +134,7 @@ void MainWindow::add_document() {
             status_label_->setText(
                 tr("%1 is already in the workspace.")
                     .arg(info.fileName()));
-            return;
+            return true;  // Readable, and M3 treats a duplicate as a no-op.
         }
     }
 
@@ -146,7 +144,7 @@ void MainWindow::add_document() {
         status_label_->setText(
             tr("Could not open %1: %2")
                 .arg(info.fileName(), file.errorString()));
-        return;
+        return false;
     }
 
     QString text = QString::fromUtf8(file.readAll());
@@ -161,6 +159,55 @@ void MainWindow::add_document() {
 
     status_label_->setText(tr("Added %1.").arg(info.fileName()));
     update_action_states();
+    return true;
+}
+
+void MainWindow::set_build_delay_ms(int ms_per_document) {
+    build_delay_ms_ = ms_per_document;
+}
+
+void MainWindow::set_core_factory(CoreFactory factory) {
+    core_factory_ = std::move(factory);
+}
+
+bool MainWindow::build_in_progress() const noexcept {
+    return build_future_.valid();
+}
+
+bool MainWindow::start_ipc_server(const QString& socket_path, QString* error) {
+    auto server = std::make_unique<IpcServer>(
+        socket_path.toStdString(),
+        [this](const std::string& path) {
+            // Runs on the server thread. A queued call copies the path and
+            // returns at once; the slot runs later on the GUI thread.
+            QMetaObject::invokeMethod(
+                this, "remote_add_document", Qt::QueuedConnection,
+                Q_ARG(QString, QString::fromStdString(path)));
+        });
+
+    std::string message;
+    if (!server->start(message)) {
+        if (error != nullptr) {
+            *error = QString::fromStdString(message);
+        }
+        return false;
+    }
+    ipc_server_ = std::move(server);
+    return true;
+}
+
+void MainWindow::remote_add_document(const QString& path) {
+    add_document_file(path);
+}
+
+void MainWindow::add_document() {
+    QString path = QFileDialog::getOpenFileName(
+        this, tr("Add Document"), QString(),
+        tr("Text files (*.txt);;All files (*)"));
+
+    if (!path.isEmpty()) {
+        add_document_file(path);
+    }
 }
 
 void MainWindow::build_corpus() {
@@ -198,7 +245,7 @@ void MainWindow::start_build_job() {
 
 void MainWindow::poll_build() {
     if (build_future_.wait_for(std::chrono::seconds(0)) !=
-        std::future_status::ready)  {
+        std::future_status::ready) {
         return;
     }
 
@@ -209,15 +256,64 @@ void MainWindow::poll_build() {
         BuildResult result = build_future_.get();
         if (current) {
             accept_build(std::move(result.core));
-        } 
-    } catch (const std::expection& error) {
-        if (currnet) {
-            report_build_failure(Qstring::fromStdString(error.what()));
         }
-    } catch    
-    
-
+    } catch (const std::exception& error) {
+        if (current) {
+            report_build_failure(QString::fromStdString(error.what()));
+        }
+    } catch (...) {
+        if (current) {
+            report_build_failure(tr("unknown error"));
+        }
     }
+
+    if (rebuild_requested_) {
+        rebuild_requested_ = false;
+        start_build_job();
+    }
+    update_action_states();
+}
+
+bool MainWindow::build_is_current() const noexcept {
+#ifdef AIWS_FAULT_ACCEPT_STALE
+    return true;
+#else
+    return build_generation_ == generation_;
+#endif
+}
+
+void MainWindow::accept_build(ProcessingCore core) {
+    processing_core_ = std::move(core);
+    state_ = CorpusState::Current;
+
+    workspace_widget_->set_corpus_status(
+        tr("Corpus: %1 chunks")
+            .arg(static_cast<qulonglong>(
+                processing_core_.chunk_count())));
+
+    status_label_->setText(
+        tr("Corpus built from %1 document(s).")
+            .arg(static_cast<qulonglong>(
+                workspace_.documents().size())));
+}
+
+void MainWindow::report_build_failure(const QString& reason) {
+#ifdef AIWS_FAULT_LOSE_FAILURE
+    (void)reason;
+    return;
+#else
+    state_ = CorpusState::Failed;
+    workspace_widget_->set_corpus_status(tr("Corpus: Build failed"));
+    status_label_->setText(tr("Build Corpus failed: %1").arg(reason));
+#endif
+}
+
+void MainWindow::cancel_running_build() {
+#ifndef AIWS_FAULT_ACCEPT_STALE
+    if (build_cancel_) {
+        build_cancel_->store(true);
+    }
+#endif
 }
 
 void MainWindow::document_selected(int row) {
@@ -239,7 +335,7 @@ void MainWindow::document_selected(int row) {
 void MainWindow::search_requested(const QString& query, int k) {
     QString text = query.trimmed();
 
-    if (!corpus_current_ || text.isEmpty()) {
+    if (!corpus_is_current() || text.isEmpty()) {
         return;
     }
 
@@ -273,7 +369,7 @@ void MainWindow::query_changed(const QString&) {
 void MainWindow::build_context_requested(int token_budget) {
     QString query = search_widget_->query().trimmed();
 
-    if (!corpus_current_ || query.isEmpty()) {
+    if (!corpus_is_current() || query.isEmpty()) {
         return;
     }
 
@@ -326,7 +422,7 @@ void MainWindow::term_inspection_requested(
     const QString& term, const QString& chunk_id) {
     QString text = term.trimmed();
 
-    if (!corpus_current_ || text.isEmpty()) {
+    if (!corpus_is_current() || text.isEmpty()) {
         return;
     }
 
@@ -358,9 +454,13 @@ void MainWindow::term_inspection_requested(
 }
 
 void MainWindow::reset_application() {
+    ++generation_;
+    cancel_running_build();
+    rebuild_requested_ = false;
+
     workspace_.clear();
     processing_core_ = ProcessingCore{};
-    corpus_current_ = false;
+    state_ = CorpusState::NotBuilt;
 
     Resettable* widgets[] = {
         workspace_widget_,
@@ -383,25 +483,33 @@ void MainWindow::exit_application() {
     }
 }
 
+bool MainWindow::corpus_is_current() const noexcept {
+    return state_ == CorpusState::Current;
+}
+
 void MainWindow::update_action_states() {
     bool has_documents = !workspace_.documents().empty();
     bool has_query = search_widget_->has_query();
+    bool current = corpus_is_current();
 
-    workspace_widget_->set_build_corpus_enabled(has_documents);
-    search_widget_->set_search_enabled(
-        corpus_current_ && has_query);
-    term_inspector_widget_->set_inspection_enabled(corpus_current_);
-    context_widget_->set_build_context_enabled(
-        corpus_current_ && has_query);
+    workspace_widget_->set_build_corpus_enabled(
+        has_documents && state_ != CorpusState::Building);
+    search_widget_->set_search_enabled(current && has_query);
+    term_inspector_widget_->set_inspection_enabled(current);
+    context_widget_->set_build_context_enabled(current && has_query);
 }
 
 void MainWindow::invalidate_corpus() {
-    if (corpus_current_) {
+    ++generation_;
+    cancel_running_build();
+    rebuild_requested_ = false;
+
+    if (state_ != CorpusState::NotBuilt) {
         workspace_widget_->set_corpus_status(
             tr("Corpus: Out of date (Build Corpus required)"));
     }
 
-    corpus_current_ = false;
+    state_ = CorpusState::NotBuilt;
     clear_processing_outputs();
 }
 

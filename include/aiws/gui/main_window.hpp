@@ -3,6 +3,7 @@
 #include <QMainWindow>
 
 #include "aiws/corpus_build_job.hpp"
+#include "aiws/ipc_server.hpp"
 #include "aiws/processing_core.hpp"
 #include "aiws/workspace.hpp"
 
@@ -51,6 +52,9 @@ public:
      */
     explicit MainWindow(QWidget* parent = nullptr);
 
+    /** @brief Stops the IPC server, then cancels and waits for any running build. */
+    ~MainWindow() override;
+
     /**
      * @brief Registers the callback invoked when the user requests Exit.
      * @param callback Function pointer to invoke for the Exit action. A null
@@ -71,6 +75,18 @@ public:
      * @param ms_per_document Delay in milliseconds (the --build-delay-ms value).
      */
     void set_build_delay_ms(int ms_per_document);
+
+    /** @brief Replaces how builds make their ProcessingCore. Lets tests force a failure. */
+    void set_core_factory(CoreFactory factory);
+
+    /** @brief True while a worker, even a cancelled one, has not been collected. */
+    bool build_in_progress() const noexcept;
+
+    /**
+     * @brief Starts serving Remote Add requests on socket_path.
+     * @return false, with error set if it is not null, if the socket is unavailable.
+     */
+    bool start_ipc_server(const QString& socket_path, QString* error = nullptr);
 
     // Everything below this line is the M3 design. In M4 it is yours to
     // change: add, remove, or redesign private members, slots, and helpers.
@@ -133,6 +149,9 @@ private slots:
     /** @brief Checks whether the worker finished, and collects its result if so. */
     void poll_build();
 
+    /** @brief GUI-thread end of a Remote Add request, reached by a queued call. */
+    void remote_add_document(const QString& path);
+
 private:
     enum class CorpusState { NotBuilt, Building, Current, Failed };
 
@@ -184,6 +203,7 @@ private:
     CoreFactory core_factory_;
     std::shared_ptr<std::atomic<bool>> build_cancel_;
     std::future<BuildResult> build_future_;
+    std::unique_ptr<IpcServer> ipc_server_;
     ExitCallback exit_callback_{nullptr};
 
     WorkspaceWidget* workspace_widget_{nullptr};

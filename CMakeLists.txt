@@ -30,6 +30,7 @@ target_compile_options(aiws_m2 PRIVATE -Wall -Wextra -Wpedantic)
 add_library(aiws_app STATIC
     src/main_window.cpp
     src/corpus_build_job.cpp
+    src/ipc_server.cpp
     src/workspace_widget.cpp
     src/search_widget.cpp
     src/context_widget.cpp
@@ -51,8 +52,14 @@ add_executable(ai_workspace_m4 src/main.cpp)
 target_link_libraries(ai_workspace_m4 PRIVATE aiws_app)
 target_compile_options(ai_workspace_m4 PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(aiws_send tools/aiws_send.cpp)
+target_include_directories(aiws_send PRIVATE include)
+target_compile_options(aiws_send PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 add_executable(student_tests tests/student_tests.cpp)
 target_link_libraries(student_tests PRIVATE aiws_app Qt6::Test)
+target_compile_definitions(student_tests PRIVATE AIWS_SEND_PATH="$<TARGET_FILE:aiws_send>")
+add_dependencies(student_tests aiws_send)
 add_test(NAME student_tests COMMAND student_tests)
 set_tests_properties(student_tests PROPERTIES TIMEOUT 60 ENVIRONMENT QT_QPA_PLATFORM=offscreen)

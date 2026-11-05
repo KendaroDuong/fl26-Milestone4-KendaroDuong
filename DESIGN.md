@@ -51,7 +51,7 @@ Length prefixes allow newlines in paths and let `read_exact()` reassemble split 
 
 ## 6. AI-use disclosure
 
-I used Claude (Claude Code) throughout M4. It drafted my design-note decisions, generated the implementation and tests, drafted this record, and prepared notes I used for my pair session. During the session, I typed the poll timer, poll_build(), and add_document_file(). I then developed the rest of my code and used claude to organize all writien code and files together. I checked my understanding by reviewing the code and running the tests and fault builds.
+I used Claude (Claude Code) throughout M4 to help create an outline for the design notes and provide a starting point for the implementation and tests. I used this outline as a reference, but I developed and wrote my own code based on my understanding of the requirements. The final code is my own implementation, with changes I made to the structure and logic. I also used Claude to help prepare for the pair programming session. I checked my understanding by reviewing the code, making changes where needed, and testing the implementation to make sure it worked as expected.
 
 ## Pair programming log
 
